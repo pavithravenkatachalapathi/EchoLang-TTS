@@ -1,0 +1,6 @@
+Flask
+gunicorn
+transformers
+torch
+sentencepiece
+gTTS
