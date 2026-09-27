@@ -3,7 +3,7 @@ import uuid
 
 from flask import Flask, render_template, request, jsonify, url_for
 from gtts import gTTS
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from deep_translator import GoogleTranslator
 
 
 app = Flask(__name__)
@@ -16,67 +16,33 @@ os.makedirs(AUDIO_FOLDER, exist_ok=True)
 SUPPORTED_LANGUAGES = {
     "hi": {
         "name": "Hindi",
-        "flag": "HI",
-        "model": "Helsinki-NLP/opus-mt-en-hi"
+        "flag": "HI"
     },
     "es": {
         "name": "Spanish",
-        "flag": "ES",
-        "model": "Helsinki-NLP/opus-mt-en-es"
+        "flag": "ES"
     },
     "fr": {
         "name": "French",
-        "flag": "FR",
-        "model": "Helsinki-NLP/opus-mt-en-fr"
+        "flag": "FR"
     },
     "de": {
         "name": "German",
-        "flag": "DE",
-        "model": "Helsinki-NLP/opus-mt-en-de"
+        "flag": "DE"
     }
 }
 
 
-MODELS = {}
-
-
-def load_model(language):
-    if language in MODELS:
-        return MODELS[language]
-
-    model_name = SUPPORTED_LANGUAGES[language]["model"]
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-
-    MODELS[language] = (tokenizer, model)
-
-    return tokenizer, model
-
-
 def translate_text(text, language):
-    tokenizer, model = load_model(language)
-
-    inputs = tokenizer(
-        text,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=512
+    translator = GoogleTranslator(
+        source="en",
+        target=language
     )
 
-    outputs = model.generate(
-        **inputs,
-        max_length=512,
-        num_beams=4,
-        early_stopping=True
-    )
+    translated_text = translator.translate(text)
 
-    translated_text = tokenizer.decode(
-        outputs[0],
-        skip_special_tokens=True
-    )
+    if not translated_text:
+        raise Exception("Translation service returned an empty response.")
 
     return translated_text
 
@@ -111,7 +77,7 @@ def home():
 @app.route("/translate", methods=["POST"])
 def translate():
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
         if not data:
             return jsonify({
