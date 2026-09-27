@@ -43,23 +43,8 @@ EchoLang/
 ├── .gitignore
 └── README.md
 
-## Overview
+Project Overview
 
-EchoLang combines **machine translation** and **text-to-speech technology** into a single web application.
+EchoLang is a lightweight web-based multilingual text-to-speech application developed using Python and Flask. It allows users to enter English text, select a target language, translate the text using the MyMemory Translation API, and convert the translated text into speech using Google Text-to-Speech (gTTS).
 
-The application follows this workflow:
-
-```text
-User enters English text
-        ↓
-Selects target language
-        ↓
-Translation API
-        ↓
-Translated text
-        ↓
-Google Text-to-Speech (gTTS)
-        ↓
-Generated MP3 audio
-        ↓
-Audio playback in browser
+The application provides a responsive and user-friendly interface with audio playback directly in the browser. EchoLang is designed with a lightweight architecture, making it suitable for local use as well as cloud deployment on platforms such as Render.
