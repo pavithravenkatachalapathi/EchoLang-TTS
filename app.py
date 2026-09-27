@@ -1,9 +1,9 @@
 import os
 import uuid
 
+import requests
 from flask import Flask, render_template, request, jsonify, url_for
 from gtts import gTTS
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 
 app = Flask(__name__)
@@ -17,66 +17,75 @@ SUPPORTED_LANGUAGES = {
     "hi": {
         "name": "Hindi",
         "flag": "HI",
-        "model": "Helsinki-NLP/opus-mt-en-hi"
+        "tts": "hi"
     },
     "es": {
         "name": "Spanish",
         "flag": "ES",
-        "model": "Helsinki-NLP/opus-mt-en-es"
+        "tts": "es"
     },
     "fr": {
         "name": "French",
         "flag": "FR",
-        "model": "Helsinki-NLP/opus-mt-en-fr"
+        "tts": "fr"
     },
     "de": {
         "name": "German",
         "flag": "DE",
-        "model": "Helsinki-NLP/opus-mt-en-de"
+        "tts": "de"
     }
 }
 
 
-MODELS = {}
-
-
-def load_model(language):
-    if language in MODELS:
-        return MODELS[language]
-
-    model_name = SUPPORTED_LANGUAGES[language]["model"]
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-
-    MODELS[language] = (tokenizer, model)
-
-    return tokenizer, model
+MYMEMORY_API = "https://api.mymemory.translated.net/get"
 
 
 def translate_text(text, language):
-    tokenizer, model = load_model(language)
+    if len(text.encode("utf-8")) > 500:
+        raise Exception(
+            "Text is too long for the translation service. "
+            "Please use a shorter sentence."
+        )
 
-    inputs = tokenizer(
-        text,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=512
+    params = {
+        "q": text,
+        "langpair": f"en|{language}",
+        "mt": "1"
+    }
+
+    email = os.environ.get("MYMEMORY_EMAIL")
+
+    if email:
+        params["de"] = email
+
+    response = requests.get(
+        MYMEMORY_API,
+        params=params,
+        timeout=20
     )
 
-    outputs = model.generate(
-        **inputs,
-        max_length=512,
-        num_beams=4,
-        early_stopping=True
+    response.raise_for_status()
+
+    data = response.json()
+
+    if data.get("responseStatus") != 200:
+        raise Exception(
+            data.get(
+                "responseDetails",
+                "Translation service failed."
+            )
+        )
+
+    response_data = data.get("responseData", {})
+
+    translated_text = response_data.get(
+        "translatedText"
     )
 
-    translated_text = tokenizer.decode(
-        outputs[0],
-        skip_special_tokens=True
-    )
+    if not translated_text:
+        raise Exception(
+            "Translation service returned an empty response."
+        )
 
     return translated_text
 
@@ -89,9 +98,11 @@ def generate_audio(text, language):
         filename
     )
 
+    tts_language = SUPPORTED_LANGUAGES[language]["tts"]
+
     speech = gTTS(
         text=text,
-        lang=language,
+        lang=tts_language,
         slow=False
     )
 
@@ -111,7 +122,7 @@ def home():
 @app.route("/translate", methods=["POST"])
 def translate():
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
         if not data:
             return jsonify({
@@ -119,8 +130,15 @@ def translate():
                 "error": "No data received."
             }), 400
 
-        text = data.get("text", "").strip()
-        language = data.get("language", "").strip()
+        text = data.get(
+            "text",
+            ""
+        ).strip()
+
+        language = data.get(
+            "language",
+            ""
+        ).strip()
 
         if not text:
             return jsonify({
@@ -132,6 +150,12 @@ def translate():
             return jsonify({
                 "success": False,
                 "error": "Text must be 500 characters or less."
+            }), 400
+
+        if len(text.encode("utf-8")) > 500:
+            return jsonify({
+                "success": False,
+                "error": "Text is too long. Please enter a shorter text."
             }), 400
 
         if language not in SUPPORTED_LANGUAGES:
@@ -162,8 +186,21 @@ def translate():
             "audio_url": audio_url
         })
 
-    except Exception as e:
+    except requests.exceptions.Timeout:
+        return jsonify({
+            "success": False,
+            "error": "Translation service timed out. Please try again."
+        }), 504
 
+    except requests.exceptions.RequestException as e:
+        print("Translation API error:", str(e))
+
+        return jsonify({
+            "success": False,
+            "error": "Unable to connect to the translation service."
+        }), 503
+
+    except Exception as e:
         print("Translation error:", str(e))
 
         return jsonify({
