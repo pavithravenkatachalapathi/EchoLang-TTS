@@ -1,9 +1,15 @@
 import os
+import gc
 import uuid
 
-import requests
+import torch
 from flask import Flask, render_template, request, jsonify, url_for
 from gtts import gTTS
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+torch.set_num_threads(1)
 
 
 app = Flask(__name__)
@@ -24,81 +30,120 @@ SUPPORTED_LANGUAGES = {
     "hi": {
         "name": "Hindi",
         "flag": "HI",
-        "tts": "hi"
+        "tts": "hi",
+        "model": "Helsinki-NLP/opus-mt-en-hi"
     },
     "es": {
         "name": "Spanish",
         "flag": "ES",
-        "tts": "es"
+        "tts": "es",
+        "model": "Helsinki-NLP/opus-mt-en-es"
     },
     "fr": {
         "name": "French",
         "flag": "FR",
-        "tts": "fr"
+        "tts": "fr",
+        "model": "Helsinki-NLP/opus-mt-en-fr"
     },
     "de": {
         "name": "German",
         "flag": "DE",
-        "tts": "de"
+        "tts": "de",
+        "model": "Helsinki-NLP/opus-mt-en-de"
     }
 }
 
 
-TRANSLATE_API = "https://libretranslate.com/translate"
+CURRENT_LANGUAGE = None
+CURRENT_TOKENIZER = None
+CURRENT_MODEL = None
+
+
+def load_model(language):
+
+    global CURRENT_LANGUAGE
+    global CURRENT_TOKENIZER
+    global CURRENT_MODEL
+
+    if (
+        CURRENT_LANGUAGE == language
+        and CURRENT_TOKENIZER is not None
+        and CURRENT_MODEL is not None
+    ):
+        return CURRENT_TOKENIZER, CURRENT_MODEL
+
+    if CURRENT_MODEL is not None:
+        del CURRENT_MODEL
+        CURRENT_MODEL = None
+
+    if CURRENT_TOKENIZER is not None:
+        del CURRENT_TOKENIZER
+        CURRENT_TOKENIZER = None
+
+    gc.collect()
+
+    if hasattr(torch, "cuda") and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    model_name = SUPPORTED_LANGUAGES[
+        language
+    ]["model"]
+
+    print(
+        f"Loading translation model: {model_name}"
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name
+    )
+
+    model = AutoModelForSeq2SeqLM.from_pretrained(
+        model_name
+    )
+
+    model.eval()
+
+    CURRENT_LANGUAGE = language
+    CURRENT_TOKENIZER = tokenizer
+    CURRENT_MODEL = model
+
+    print(
+        f"Model loaded successfully: {model_name}"
+    )
+
+    return tokenizer, model
 
 
 def translate_text(text, language):
 
-    if len(text) > 500:
-        raise Exception(
-            "Text must be 500 characters or less."
-        )
-
-    payload = {
-        "q": text,
-        "source": "en",
-        "target": language,
-        "format": "text"
-    }
-
-    api_key = os.environ.get(
-        "LIBRETRANSLATE_API_KEY"
+    tokenizer, model = load_model(
+        language
     )
 
-    if api_key:
-        payload["api_key"] = api_key
-
-    response = requests.post(
-        TRANSLATE_API,
-        json=payload,
-        headers={
-            "Content-Type": "application/json"
-        },
-        timeout=30
+    inputs = tokenizer(
+        text,
+        return_tensors="pt",
+        truncation=True,
+        max_length=128
     )
 
-    if response.status_code == 429:
-        raise Exception(
-            "Translation service is busy right now. "
-            "Please wait a few seconds and try again."
+    with torch.no_grad():
+
+        outputs = model.generate(
+            **inputs,
+            max_length=128,
+            num_beams=1,
+            do_sample=False
         )
 
-    if response.status_code == 403:
-        raise Exception(
-            "Translation service requires an API key."
-        )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    translated_text = data.get(
-        "translatedText"
+    translated_text = tokenizer.decode(
+        outputs[0],
+        skip_special_tokens=True
     )
 
     if not translated_text:
         raise Exception(
-            "Translation service returned an empty response."
+            "Translation model returned empty text."
         )
 
     return translated_text
@@ -106,7 +151,9 @@ def translate_text(text, language):
 
 def generate_audio(text, language):
 
-    filename = f"{uuid.uuid4().hex}.mp3"
+    filename = (
+        f"{uuid.uuid4().hex}.mp3"
+    )
 
     filepath = os.path.join(
         AUDIO_FOLDER,
@@ -170,26 +217,39 @@ def translate():
 
             return jsonify({
                 "success": False,
-                "error": "Please enter some English text."
+                "error":
+                    "Please enter some English text."
             }), 400
 
         if len(text) > 500:
 
             return jsonify({
                 "success": False,
-                "error": "Text must be 500 characters or less."
+                "error":
+                    "Text must be 500 characters or less."
             }), 400
 
         if language not in SUPPORTED_LANGUAGES:
 
             return jsonify({
                 "success": False,
-                "error": "Unsupported target language."
+                "error":
+                    "Unsupported target language."
             }), 400
+
+        print(
+            f"Translation requested: "
+            f"{language}"
+        )
 
         translated_text = translate_text(
             text,
             language
+        )
+
+        print(
+            f"Translation completed: "
+            f"{translated_text}"
         )
 
         filename = generate_audio(
@@ -218,36 +278,6 @@ def translate():
                 audio_url
         })
 
-    except requests.exceptions.Timeout:
-
-        return jsonify({
-            "success": False,
-            "error":
-                "Translation service timed out. "
-                "Please try again."
-        }), 504
-
-    except requests.exceptions.ConnectionError:
-
-        return jsonify({
-            "success": False,
-            "error":
-                "Unable to connect to the translation service."
-        }), 503
-
-    except requests.exceptions.RequestException as e:
-
-        print(
-            "Translation API error:",
-            str(e)
-        )
-
-        return jsonify({
-            "success": False,
-            "error":
-                "Translation service is currently unavailable."
-        }), 503
-
     except Exception as e:
 
         print(
@@ -266,7 +296,8 @@ def health():
 
     return jsonify({
         "status": "ok",
-        "application": "EchoLang"
+        "application": "EchoLang",
+        "translation": "MarianMT"
     })
 
 
@@ -282,5 +313,5 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port,
-        debug=True
+        debug=False
     )

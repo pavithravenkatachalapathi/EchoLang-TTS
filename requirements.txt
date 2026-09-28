@@ -1,4 +1,7 @@
 Flask
 gunicorn
 gTTS
-requests
+transformers
+torch==2.6.0
+sentencepiece
+sacremoses
