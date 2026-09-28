@@ -9,8 +9,15 @@ from gtts import gTTS
 app = Flask(__name__)
 
 
-AUDIO_FOLDER = os.path.join(app.static_folder, "audio")
-os.makedirs(AUDIO_FOLDER, exist_ok=True)
+AUDIO_FOLDER = os.path.join(
+    app.static_folder,
+    "audio"
+)
+
+os.makedirs(
+    AUDIO_FOLDER,
+    exist_ok=True
+)
 
 
 SUPPORTED_LANGUAGES = {
@@ -37,48 +44,55 @@ SUPPORTED_LANGUAGES = {
 }
 
 
-MYMEMORY_API = "https://api.mymemory.translated.net/get"
+TRANSLATE_API = "https://libretranslate.com/translate"
 
 
 def translate_text(text, language):
-    if len(text.encode("utf-8")) > 500:
+
+    if len(text) > 500:
         raise Exception(
-            "Text is too long for the translation service. "
-            "Please use a shorter sentence."
+            "Text must be 500 characters or less."
         )
 
-    params = {
+    payload = {
         "q": text,
-        "langpair": f"en|{language}",
-        "mt": "1"
+        "source": "en",
+        "target": language,
+        "format": "text"
     }
 
-    email = os.environ.get("MYMEMORY_EMAIL")
-
-    if email:
-        params["de"] = email
-
-    response = requests.get(
-        MYMEMORY_API,
-        params=params,
-        timeout=20
+    api_key = os.environ.get(
+        "LIBRETRANSLATE_API_KEY"
     )
+
+    if api_key:
+        payload["api_key"] = api_key
+
+    response = requests.post(
+        TRANSLATE_API,
+        json=payload,
+        headers={
+            "Content-Type": "application/json"
+        },
+        timeout=30
+    )
+
+    if response.status_code == 429:
+        raise Exception(
+            "Translation service is busy right now. "
+            "Please wait a few seconds and try again."
+        )
+
+    if response.status_code == 403:
+        raise Exception(
+            "Translation service requires an API key."
+        )
 
     response.raise_for_status()
 
     data = response.json()
 
-    if data.get("responseStatus") != 200:
-        raise Exception(
-            data.get(
-                "responseDetails",
-                "Translation service failed."
-            )
-        )
-
-    response_data = data.get("responseData", {})
-
-    translated_text = response_data.get(
+    translated_text = data.get(
         "translatedText"
     )
 
@@ -91,6 +105,7 @@ def translate_text(text, language):
 
 
 def generate_audio(text, language):
+
     filename = f"{uuid.uuid4().hex}.mp3"
 
     filepath = os.path.join(
@@ -98,7 +113,9 @@ def generate_audio(text, language):
         filename
     )
 
-    tts_language = SUPPORTED_LANGUAGES[language]["tts"]
+    tts_language = SUPPORTED_LANGUAGES[
+        language
+    ]["tts"]
 
     speech = gTTS(
         text=text,
@@ -113,18 +130,27 @@ def generate_audio(text, language):
 
 @app.route("/")
 def home():
+
     return render_template(
         "index.html",
         languages=SUPPORTED_LANGUAGES
     )
 
 
-@app.route("/translate", methods=["POST"])
+@app.route(
+    "/translate",
+    methods=["POST"]
+)
 def translate():
+
     try:
-        data = request.get_json(silent=True)
+
+        data = request.get_json(
+            silent=True
+        )
 
         if not data:
+
             return jsonify({
                 "success": False,
                 "error": "No data received."
@@ -141,24 +167,21 @@ def translate():
         ).strip()
 
         if not text:
+
             return jsonify({
                 "success": False,
                 "error": "Please enter some English text."
             }), 400
 
         if len(text) > 500:
+
             return jsonify({
                 "success": False,
                 "error": "Text must be 500 characters or less."
             }), 400
 
-        if len(text.encode("utf-8")) > 500:
-            return jsonify({
-                "success": False,
-                "error": "Text is too long. Please enter a shorter text."
-            }), 400
-
         if language not in SUPPORTED_LANGUAGES:
+
             return jsonify({
                 "success": False,
                 "error": "Unsupported target language."
@@ -180,28 +203,57 @@ def translate():
         )
 
         return jsonify({
+
             "success": True,
-            "translated_text": translated_text,
-            "language": SUPPORTED_LANGUAGES[language]["name"],
-            "audio_url": audio_url
+
+            "translated_text":
+                translated_text,
+
+            "language":
+                SUPPORTED_LANGUAGES[
+                    language
+                ]["name"],
+
+            "audio_url":
+                audio_url
         })
 
     except requests.exceptions.Timeout:
+
         return jsonify({
             "success": False,
-            "error": "Translation service timed out. Please try again."
+            "error":
+                "Translation service timed out. "
+                "Please try again."
         }), 504
 
-    except requests.exceptions.RequestException as e:
-        print("Translation API error:", str(e))
+    except requests.exceptions.ConnectionError:
 
         return jsonify({
             "success": False,
-            "error": "Unable to connect to the translation service."
+            "error":
+                "Unable to connect to the translation service."
+        }), 503
+
+    except requests.exceptions.RequestException as e:
+
+        print(
+            "Translation API error:",
+            str(e)
+        )
+
+        return jsonify({
+            "success": False,
+            "error":
+                "Translation service is currently unavailable."
         }), 503
 
     except Exception as e:
-        print("Translation error:", str(e))
+
+        print(
+            "Translation error:",
+            str(e)
+        )
 
         return jsonify({
             "success": False,
@@ -211,6 +263,7 @@ def translate():
 
 @app.route("/health")
 def health():
+
     return jsonify({
         "status": "ok",
         "application": "EchoLang"
