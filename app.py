@@ -1,6 +1,6 @@
 import os
-import gc
 import uuid
+import gc
 
 import torch
 from flask import Flask, render_template, request, jsonify, url_for
@@ -8,161 +8,106 @@ from gtts import gTTS
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-torch.set_num_threads(1)
-
-
 app = Flask(__name__)
 
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
-AUDIO_FOLDER = os.path.join(
-    app.static_folder,
-    "audio"
-)
 
-os.makedirs(
-    AUDIO_FOLDER,
-    exist_ok=True
-)
+AUDIO_FOLDER = os.path.join(app.static_folder, "audio")
+os.makedirs(AUDIO_FOLDER, exist_ok=True)
 
 
 SUPPORTED_LANGUAGES = {
     "hi": {
         "name": "Hindi",
         "flag": "HI",
-        "tts": "hi",
-        "model": "Helsinki-NLP/opus-mt-en-hi"
+        "model": "Helsinki-NLP/opus-mt-en-hi",
+        "tts": "hi"
     },
     "es": {
         "name": "Spanish",
         "flag": "ES",
-        "tts": "es",
-        "model": "Helsinki-NLP/opus-mt-en-es"
+        "model": "Helsinki-NLP/opus-mt-en-es",
+        "tts": "es"
     },
     "fr": {
         "name": "French",
         "flag": "FR",
-        "tts": "fr",
-        "model": "Helsinki-NLP/opus-mt-en-fr"
+        "model": "Helsinki-NLP/opus-mt-en-fr",
+        "tts": "fr"
     },
     "de": {
         "name": "German",
         "flag": "DE",
-        "tts": "de",
-        "model": "Helsinki-NLP/opus-mt-en-de"
+        "model": "Helsinki-NLP/opus-mt-en-de",
+        "tts": "de"
     }
 }
 
 
-CURRENT_LANGUAGE = None
-CURRENT_TOKENIZER = None
-CURRENT_MODEL = None
-
-
-def load_model(language):
-
-    global CURRENT_LANGUAGE
-    global CURRENT_TOKENIZER
-    global CURRENT_MODEL
-
-    if (
-        CURRENT_LANGUAGE == language
-        and CURRENT_TOKENIZER is not None
-        and CURRENT_MODEL is not None
-    ):
-        return CURRENT_TOKENIZER, CURRENT_MODEL
-
-    if CURRENT_MODEL is not None:
-        del CURRENT_MODEL
-        CURRENT_MODEL = None
-
-    if CURRENT_TOKENIZER is not None:
-        del CURRENT_TOKENIZER
-        CURRENT_TOKENIZER = None
-
-    gc.collect()
-
-    if hasattr(torch, "cuda") and torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    model_name = SUPPORTED_LANGUAGES[
-        language
-    ]["model"]
-
-    print(
-        f"Loading translation model: {model_name}"
-    )
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name
-    )
-
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        model_name
-    )
-
-    model.eval()
-
-    CURRENT_LANGUAGE = language
-    CURRENT_TOKENIZER = tokenizer
-    CURRENT_MODEL = model
-
-    print(
-        f"Model loaded successfully: {model_name}"
-    )
-
-    return tokenizer, model
-
-
 def translate_text(text, language):
 
-    tokenizer, model = load_model(
-        language
-    )
+    model_name = SUPPORTED_LANGUAGES[language]["model"]
 
-    inputs = tokenizer(
-        text,
-        return_tensors="pt",
-        truncation=True,
-        max_length=128
-    )
+    tokenizer = None
+    model = None
 
-    with torch.no_grad():
+    try:
 
-        outputs = model.generate(
-            **inputs,
-            max_length=128,
-            num_beams=1,
-            do_sample=False
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name
         )
 
-    translated_text = tokenizer.decode(
-        outputs[0],
-        skip_special_tokens=True
-    )
-
-    if not translated_text:
-        raise Exception(
-            "Translation model returned empty text."
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            model_name
         )
 
-    return translated_text
+        model.eval()
+
+        inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=256
+        )
+
+        with torch.inference_mode():
+
+            outputs = model.generate(
+                **inputs,
+                max_length=256,
+                num_beams=2,
+                early_stopping=True
+            )
+
+        translated_text = tokenizer.decode(
+            outputs[0],
+            skip_special_tokens=True
+        )
+
+        return translated_text
+
+    finally:
+
+        del model
+        del tokenizer
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def generate_audio(text, language):
 
-    filename = (
-        f"{uuid.uuid4().hex}.mp3"
-    )
+    filename = f"{uuid.uuid4().hex}.mp3"
 
     filepath = os.path.join(
         AUDIO_FOLDER,
         filename
     )
 
-    tts_language = SUPPORTED_LANGUAGES[
-        language
-    ]["tts"]
+    tts_language = SUPPORTED_LANGUAGES[language]["tts"]
 
     speech = gTTS(
         text=text,
@@ -184,20 +129,14 @@ def home():
     )
 
 
-@app.route(
-    "/translate",
-    methods=["POST"]
-)
+@app.route("/translate", methods=["POST"])
 def translate():
 
     try:
 
-        data = request.get_json(
-            silent=True
-        )
+        data = request.get_json(silent=True)
 
         if not data:
-
             return jsonify({
                 "success": False,
                 "error": "No data received."
@@ -214,42 +153,26 @@ def translate():
         ).strip()
 
         if not text:
-
             return jsonify({
                 "success": False,
-                "error":
-                    "Please enter some English text."
+                "error": "Please enter some English text."
             }), 400
 
         if len(text) > 500:
-
             return jsonify({
                 "success": False,
-                "error":
-                    "Text must be 500 characters or less."
+                "error": "Text must be 500 characters or less."
             }), 400
 
         if language not in SUPPORTED_LANGUAGES:
-
             return jsonify({
                 "success": False,
-                "error":
-                    "Unsupported target language."
+                "error": "Unsupported target language."
             }), 400
-
-        print(
-            f"Translation requested: "
-            f"{language}"
-        )
 
         translated_text = translate_text(
             text,
             language
-        )
-
-        print(
-            f"Translation completed: "
-            f"{translated_text}"
         )
 
         filename = generate_audio(
@@ -263,19 +186,10 @@ def translate():
         )
 
         return jsonify({
-
             "success": True,
-
-            "translated_text":
-                translated_text,
-
-            "language":
-                SUPPORTED_LANGUAGES[
-                    language
-                ]["name"],
-
-            "audio_url":
-                audio_url
+            "translated_text": translated_text,
+            "language": SUPPORTED_LANGUAGES[language]["name"],
+            "audio_url": audio_url
         })
 
     except Exception as e:
@@ -287,7 +201,7 @@ def translate():
 
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": "Translation failed. Please try again."
         }), 500
 
 
@@ -296,8 +210,7 @@ def health():
 
     return jsonify({
         "status": "ok",
-        "application": "EchoLang",
-        "translation": "MarianMT"
+        "application": "EchoLang"
     })
 
 
